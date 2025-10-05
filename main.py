@@ -38,27 +38,10 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
         # return (host, port, intent, protocol_version)
         if packsize == 254:
             self.logger.debug('legacy')
-            while readed < 36:
+            while readed < 0x36:
                 readed += self.read_to_stream(32)
                 self.logger.debug(f'now read {readed}')
-            self.logger.debug('[{}]'.format(', '.join(hex(x) for x in list(self.stream.getbuffer()))))
-            msg = '§1\x00' # string header
-            version = environ.get('mcversion', '67.69')
-            maxp = int(environ.get('mcmaxplr', '50'))
-            onlp = int(environ.get('mconlineplr', '100'))
-            motd = environ.get('mcmotd', '§da fake status server')
-            proto = environ.get('mcproto', 'same')
-            if proto == 'same':
-                protocol = 127
-            else:
-                protocol = int(proto)
-            msg += f'{str(protocol)}\x00{version}\x00{motd}\x00{str(onlp)}\x00{str(maxp)}\x00'
-            msg = msg.encode('utf-16be')
-            lngt = (len(msg)//2).to_bytes(2)
-            packet = b'\xff' + lngt
-            response = b''.join([packet, msg])
-            self.logger.debug(f'responding with {response}')
-            self.request.send(response)
+            self.handle_legacy_ping()
         else:
             handshake_res = self.handle_handshake(self.stream)
             if handshake_res == None:
@@ -68,10 +51,6 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
                 self.logger.debug('waiting for new message...')
                 self.read_to_stream(256)
                 self.logger.debug(f'received message')
-                # todo check for empty
-                if(False):
-                    print('ignored empty message')
-                    continue
                 packet_size = varint.decode_stream(self.stream)
                 self.logger.debug(f'size: {packet_size}')
                 packet_id = self.stream.read(1)[0]
@@ -94,6 +73,26 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
     def finish(self):
         self.logger.debug('closed connection')
         return super().finish()
+    def handle_legacy_ping(self):
+        # handle legacy ping
+        self.logger.debug('[{}]'.format(', '.join(hex(x) for x in list(self.stream.getbuffer()))))
+        msg = '§1\x00' # string header
+        version = environ.get('mcversion', '67.69')
+        maxp = int(environ.get('mcmaxplr', '50'))
+        onlp = int(environ.get('mconlineplr', '100'))
+        motd = environ.get('mcmotd', '§da fake status server')
+        proto = environ.get('mcproto', 'same')
+        if proto == 'same':
+            protocol = 127
+        else:
+            protocol = int(proto)
+        msg += f'{str(protocol)}\x00{version}\x00{motd}\x00{str(onlp)}\x00{str(maxp)}\x00'
+        msg = msg.encode('utf-16be')
+        lngt = (len(msg)//2).to_bytes(2)
+        packet = b'\xff' + lngt
+        response = b''.join([packet, msg])
+        self.logger.debug(f'responding with {response}')
+        self.request.send(response)
     def handle_handshake(self, dstream):
         self.logger.info("Handling handshake")
         self.logger.debug(f'buffer: {list(self.stream.getvalue())}')
