@@ -53,18 +53,30 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
                 self.logger.debug(f'now read {readed}')
             self.handle_legacy_ping()
         else:
+            while readed < packsize:
+                n = self.read_to_stream(packsize - readed)
+                if n == None:
+                    return
+                readed += n
             handshake_res = self.handle_handshake(self.stream)
             if handshake_res == None:
                 return
             self.logger.info('received handshake, waiting for ping and request')
             for i in range(0,2):
                 self.logger.debug('waiting for new message...')
+                readed = 0
                 n = self.read_to_stream(256)
                 if n == None:
                     return
+                readed += n
                 self.logger.debug(f'received message')
                 packet_size = varint.decode_stream(self.stream)
                 self.logger.debug(f'size: {packet_size}')
+                while readed < packet_size:
+                    n = self.read_to_stream(packet_size - readed)
+                    if n == None:
+                        return
+                    readed += n
                 packet_id = self.stream.read(1)[0]
                 if packet_id == 0x00:
                     self.logger.debug('status request')
@@ -83,7 +95,7 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
                     return
         return super().handle()
     def finish(self):
-        self.logger.debug('closed connection')
+        self.logger.info('closed connection')
         return super().finish()
     def handle_legacy_ping(self):
         # handle legacy ping
