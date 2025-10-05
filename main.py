@@ -33,7 +33,7 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
     def handle(self):
         self.logger.debug('Received request')
         readed = self.read_to_stream(32)
-        packsize = varint.decode_stream(self.stream)[0]
+        packsize = varint.decode_stream(self.stream)
         self.logger.debug(f'packsize: {packsize} at {self.stream.tell()}')
         # return (host, port, intent, protocol_version)
         if packsize == 254:
@@ -72,7 +72,7 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
                 if(False):
                     print('ignored empty message')
                     continue
-                packet_size = varint.decode_stream(self.stream)[0]
+                packet_size = varint.decode_stream(self.stream)
                 self.logger.debug(f'size: {packet_size}')
                 packet_id = self.stream.read(1)[0]
                 if packet_id == 0x00:
@@ -103,12 +103,12 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
             self.request.send(b"closed")
             return None
         self.logger.debug('valid request')
-        (protocol_version, br) = varint.decode_stream(dstream)
-        (strlen, br) = varint.decode_stream(dstream)
+        protocol_version = varint.decode_stream(dstream)
+        strlen = varint.decode_stream(dstream)
         host = dstream.read(strlen).decode('utf-8')
         cport = dstream.read(2)
         port = struct.unpack('>H', cport)[0]
-        intent = varint.decode_stream(dstream)[0]
+        intent = varint.decode_stream(dstream)
         self.logger.debug('Valid connection')
         self.logger.debug(f'protocol: {protocol_version}')
         self.logger.debug(f'address: {host}:{port}')
@@ -145,9 +145,9 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
             False,
             icon
             ).encode('utf-8')
-        responselen = varint.encode(len(response))[0]
+        responselen = varint.encode(len(response))
         senddata = b''.join([bytes([0]), responselen, response])
-        senddata = b''.join([varint.encode(len(senddata))[0], senddata])
+        senddata = b''.join([varint.encode(len(senddata)), senddata])
         self.logger.debug(f'sending {senddata}')
         self.request.send(senddata)
     
