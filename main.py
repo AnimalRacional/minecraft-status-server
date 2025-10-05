@@ -171,7 +171,8 @@ def main():
     port = 8500
     if(len(argv) > 1):
         port = int(argv[1])
-    address = ('localhost', port)
+    addr = environ.get('mcaddr', 'localhost')
+    address = (addr, port)
     server = StatusServer(address, StatusServerHandler, True, servericon)
     try:
         address = server.server_address
