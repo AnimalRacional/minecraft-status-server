@@ -18,6 +18,7 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
         self.stream = BytesIO(bytearray(512))
         return super().__init__(request, client_address, server)
     def setup(self):
+        self.request.settimeout(10)
         return super().setup()
     def read_to_stream(self, n):
         self.logger.debug(f'initial tell: {self.stream.tell()}')
@@ -25,7 +26,11 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
             self.stream.write(b'0' * n)
             self.stream.seek(-n, 1)
             self.logger.debug(f'expand tell: {self.stream.tell()}')
-        n = self.stream.write(self.request.recv(n))
+        try:
+            n = self.stream.write(self.request.recv(n))
+        except TimeoutError:
+            self.logger.debug('Timed out')
+            return None
         self.logger.debug(f'recvd {n}')
         self.stream.seek(-n, 1)
         self.logger.debug(f'final tell {self.stream.tell()}')
@@ -33,13 +38,18 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
     def handle(self):
         self.logger.debug('Received request')
         readed = self.read_to_stream(32)
+        if(readed == None):
+            return
         packsize = varint.decode_stream(self.stream)
         self.logger.debug(f'packsize: {packsize} at {self.stream.tell()}')
         # return (host, port, intent, protocol_version)
         if packsize == 254:
             self.logger.debug('legacy')
             while readed < 0x36:
-                readed += self.read_to_stream(32)
+                n = self.read_to_stream(32)
+                if n == None:
+                    return
+                readed += n
                 self.logger.debug(f'now read {readed}')
             self.handle_legacy_ping()
         else:
@@ -49,7 +59,9 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
             self.logger.info('received handshake, waiting for ping and request')
             for i in range(0,2):
                 self.logger.debug('waiting for new message...')
-                self.read_to_stream(256)
+                n = self.read_to_stream(256)
+                if n == None:
+                    return
                 self.logger.debug(f'received message')
                 packet_size = varint.decode_stream(self.stream)
                 self.logger.debug(f'size: {packet_size}')
