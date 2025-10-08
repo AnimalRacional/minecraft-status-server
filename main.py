@@ -11,6 +11,11 @@ import varint
 import struct
 import uuid
 from PIL import Image
+try:
+    import dotenv
+    dotenv.load_dotenv()
+finally:
+    pass
 
 logging.basicConfig(level=logging.INFO, format='%(name)s: %(message)s')
 servericon: str = ''
@@ -49,12 +54,11 @@ def handle_handshake(logger, dstream: BufferedIOBase):
         return (host, port, intent, protocol_version)
 
 def handle_status_request(stream: BufferedIOBase, protocol_version: int, logger, icon):
-        players = environ.get('players', 'Herobrine, Notch').split(' ')
-        logger.debug(f'environ players: {players}')
+        players = environ.get('players', 'Herobrine Notch').split(' ')
         playerlist = []
         for p in players:
             playerlist.append({"name": p, "id": "0541ed27-7595-4e6a-9101-6c07f879b7b5"})
-        version = environ.get('mcversion', '67.69')
+        version = environ.get('mcversion', 'Any version')
         maxp = int(environ.get('mcmaxplr', '50'))
         onlp = int(environ.get('mconlineplr', '100'))
         motd = environ.get('mcmotd', '§da fake status server')
@@ -143,7 +147,7 @@ def handle_legacy_ping(logger, stream: BufferedIOBase):
         port = int.from_bytes(stream.read(4))
         logger.info(f'legacy connecting to {hostname}:{port}')
         msg = '§1\x00' # string header
-        version = environ.get('mcversion', '67.69')
+        version = environ.get('mcversion', 'Any version')
         maxp = int(environ.get('mcmaxplr', '50'))
         onlp = int(environ.get('mconlineplr', '100'))
         motd = environ.get('mcmotd', '§da fake status server')
