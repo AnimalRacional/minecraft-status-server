@@ -1,145 +1,56 @@
-import logging
-import socketserver
-import varint
-from io import BytesIO
-import struct
-from util import make_status_response
-from os import environ
-from json import dumps
-from PIL import Image
+import traceback
 import base64
+from json import dumps
+from packet_handler import unsized_packet_handler, packet_handler, unsized_packet_handler, Packet, PacketServerHandler
+from socket import socket
+from socketserver import BaseRequestHandler, TCPServer
+from os import environ
+import logging
+from io import BufferedIOBase, BytesIO
+import varint
+import struct
+import uuid
+from PIL import Image
 
-logging.basicConfig(level=logging.DEBUG, format='%(name)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(name)s: %(message)s')
+servericon: str = ''
 
-class StatusServerHandler(socketserver.BaseRequestHandler):
-    def __init__(self, request, client_address, server) -> None:
-        self.logger = logging.getLogger('StatusServerHandler')
-        #self.logger.debug(f'__init__: CLIADDR: {client_address}, REQ: {request}, SERVER: {server}')
-        self.stream = BytesIO(bytearray(512))
-        return super().__init__(request, client_address, server)
-    def setup(self):
-        self.request.settimeout(10)
-        return super().setup()
-    def read_to_stream(self, n):
-        self.logger.debug(f'initial tell: {self.stream.tell()}')
-        if abs(self.stream.getbuffer().nbytes - self.stream.tell() < n):
-            self.stream.write(b'0' * n)
-            self.stream.seek(-n, 1)
-            self.logger.debug(f'expand tell: {self.stream.tell()}')
-        try:
-            n = self.stream.write(self.request.recv(n))
-        except TimeoutError:
-            self.logger.debug('Timed out')
-            return None
-        self.logger.debug(f'recvd {n}')
-        self.stream.seek(-n, 1)
-        self.logger.debug(f'final tell {self.stream.tell()}')
-        return n
-    def handle(self):
-        self.logger.debug('Received request')
-        readed = self.read_to_stream(32)
-        if(readed == None):
-            return
-        packsize = varint.decode_stream(self.stream)
-        self.logger.debug(f'packsize: {packsize} at {self.stream.tell()}')
-        # return (host, port, intent, protocol_version)
-        if packsize == 254:
-            self.logger.debug('legacy')
-            while readed < 0x36:
-                n = self.read_to_stream(32)
-                if n == None:
-                    return
-                readed += n
-                self.logger.debug(f'now read {readed}')
-            self.handle_legacy_ping()
-        else:
-            while readed < packsize:
-                n = self.read_to_stream(packsize - readed)
-                if n == None:
-                    return
-                readed += n
-            handshake_res = self.handle_handshake(self.stream)
-            if handshake_res == None:
-                return
-            self.logger.info('received handshake, waiting for ping and request')
-            for i in range(0,2):
-                self.logger.debug('waiting for new message...')
-                readed = 0
-                n = self.read_to_stream(256)
-                if n == None:
-                    return
-                readed += n
-                self.logger.debug(f'received message')
-                packet_size = varint.decode_stream(self.stream)
-                self.logger.debug(f'size: {packet_size}')
-                while readed < packet_size:
-                    n = self.read_to_stream(packet_size - readed)
-                    if n == None:
-                        return
-                    readed += n
-                packet_id = self.stream.read(1)[0]
-                if packet_id == 0x00:
-                    self.logger.debug('status request')
-                    self.handle_status_request(handshake_res[3])
-                elif packet_id == 0x01:
-                    self.logger.debug('got ping packet')
-                    long = self.stream.read(8)
-                    longval = int.from_bytes(long)
-                    self.logger.debug(f'ping packet value: {longval}')
-                    tosend = b''.join([bytes([len(long)+1, 0x01]), long])
-                    self.logger.debug(f'pong: {tosend}')
-                    self.request.send(tosend)
-                else:
-                    self.logger.error(f'got packet {packet_id} waiting for ping')
-                    #self.request.send(bytes([0x09,0x01,0x10,0x20,0x30,0x40,0x50,0x60,0x70,0x80]))
-                    return
-        return super().handle()
-    def finish(self):
-        self.logger.info('closed connection')
-        return super().finish()
-    def handle_legacy_ping(self):
-        # handle legacy ping
-        self.logger.debug('[{}]'.format(', '.join(hex(x) for x in list(self.stream.getbuffer()))))
-        msg = '§1\x00' # string header
-        version = environ.get('mcversion', '67.69')
-        maxp = int(environ.get('mcmaxplr', '50'))
-        onlp = int(environ.get('mconlineplr', '100'))
-        motd = environ.get('mcmotd', '§da fake status server')
-        proto = environ.get('mcproto', 'same')
-        if proto == 'same':
-            protocol = 127
-        else:
-            protocol = int(proto)
-        msg += f'{str(protocol)}\x00{version}\x00{motd}\x00{str(onlp)}\x00{str(maxp)}\x00'
-        msg = msg.encode('utf-16be')
-        lngt = (len(msg)//2).to_bytes(2)
-        packet = b'\xff' + lngt
-        response = b''.join([packet, msg])
-        self.logger.debug(f'responding with {response}')
-        self.request.send(response)
-    def handle_handshake(self, dstream):
-        self.logger.info("Handling handshake")
-        self.logger.debug(f'buffer: {list(self.stream.getvalue())}')
-        packet_id = dstream.read(1)[0]
-        if packet_id != 0:
-            self.logger.debug(f"invalid request: handshake packet id was {packet_id}")
-            self.request.send(b"closed")
-            return None
-        self.logger.debug('valid request')
+
+def make_status_response(version, protocol, maxplr, players, playerlist, motd, secure = False, icon = ''):
+    msgobj = {
+        "version": {
+            "name": version,
+            "protocol": protocol
+        },
+        "players": {
+            "max": maxplr,
+            "online": players,
+            "sample": playerlist
+        },
+        "description": motd
+    }
+    if icon != '':
+        msgobj['favicon'] = f"data:image/png;base64,{icon}"
+    msgobj['enforcesSecureChat'] = "true" if secure else "false"
+    msg = dumps(msgobj)
+    print(f'status message: {msg}')
+    return msg
+
+def handle_handshake(logger, dstream: BufferedIOBase):
         protocol_version = varint.decode_stream(dstream)
         strlen = varint.decode_stream(dstream)
         host = dstream.read(strlen).decode('utf-8')
         cport = dstream.read(2)
         port = struct.unpack('>H', cport)[0]
         intent = varint.decode_stream(dstream)
-        self.logger.debug('Valid connection')
-        self.logger.debug(f'protocol: {protocol_version}')
-        self.logger.debug(f'address: {host}:{port}')
-        self.logger.debug(f'intent: {intent}')
+        logger.info(f'protocol: {protocol_version}')
+        logger.info(f'address: {host}:{port}')
+        logger.info(f'intent: {intent}')
         return (host, port, intent, protocol_version)
-    def handle_status_request(self, protocol_version):
+
+def handle_status_request(stream: BufferedIOBase, protocol_version: int, logger, icon):
         players = environ.get('players', 'Herobrine, Notch').split(' ')
-        print(f'environ players: {players}')
+        logger.debug(f'environ players: {players}')
         playerlist = []
         for p in players:
             playerlist.append({"name": p, "id": "0541ed27-7595-4e6a-9101-6c07f879b7b5"})
@@ -152,18 +63,14 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
             protocol = protocol_version
         else:
             protocol = int(proto)
-        try:
-            icon = self.server.servericon
-        except AttributeError:
-            icon = ''
-            
-        self.logger.debug(f'icon len: {len(icon)}')
+
+        logger.debug(f'icon len: {len(icon)}')
         response = make_status_response(
             version, 
             protocol, 
             maxp, 
             onlp, 
-            dumps(playerlist),
+            playerlist,
             motd,
             False,
             icon
@@ -171,42 +78,129 @@ class StatusServerHandler(socketserver.BaseRequestHandler):
         responselen = varint.encode(len(response))
         senddata = b''.join([bytes([0]), responselen, response])
         senddata = b''.join([varint.encode(len(senddata)), senddata])
-        self.logger.debug(f'sending {senddata}')
-        self.request.send(senddata)
+        logger.debug(f'sending {senddata}')
+        return senddata
     
-class StatusServer(socketserver.TCPServer):
-    def __init__(self, server_address, RequestHandlerClass, bind_and_activate, icon = None):
-        self.logger = logging.getLogger('StatusServer')
-        self.servericon = icon
-        super().__init__(server_address, RequestHandlerClass, bind_and_activate)
+def handle_login_request(logger, stream: BufferedIOBase):
+    namelen = varint.decode_stream(stream)
+    if namelen > 16:
+        logger.error(f'name too big: {namelen}')
+        return b''
+    name = stream.read(namelen).decode('utf-8')
+    plruuid = stream.read(16)
+    uuid.UUID(bytes = plruuid)
+    logger.info(f'player login: {name} ({str(plruuid)})')
+    responsemsg = environ.get('mckickreason', '§dStatus Server only!')
+    if not (responsemsg.startswith('[') or responsemsg.startswith('{')):
+        responsemsg = f'"{responsemsg}"'
+    responsedata = responsemsg.encode('utf-8')
+    response = b''.join([b'\x00', varint.encode(len(responsedata)), responsedata])
+    response = b''.join([varint.encode(len(response)), response])
+    return response
 
+handshake_data = {}
+
+@packet_handler(0)
+def handshake_status_login(packet: Packet, client: socket, address):
+    logger = logging.getLogger(f'Packet ({packet.id} s{packet.size} by {address})')
+    if address not in handshake_data:
+        logger.debug(f"handshake: {packet.id} sized {packet.size} by {address}")
+        handshake_data[address] = handle_handshake(logger, packet.stream)
+    elif handshake_data[address][2] == 1: # intent was status request
+        logger.debug(f'status request: {packet.id} sized {packet.size} by {address}')
+        protocol = handshake_data[address][3]
+        data = handle_status_request(packet.stream, protocol, logger, servericon)
+        client.send(data)
+    elif handshake_data[address][2] == 2: # intent was login request
+        logger.debug(f'login request: {packet.id} sized {packet.size} by {address}')
+        response = handle_login_request(logger, packet.stream)
+        client.send(response)
+
+@packet_handler(1)
+def ping(packet: Packet, client: socket, address):
+    logger = logging.getLogger(f'Packet ({packet.id} s{packet.size} by {address})')
+    logger.debug(f"ping: {packet.id} sized {packet.size} by {address}")
+
+    long = packet.stream.read(8)
+    tosend = b''.join([bytes([len(long)+1, 0x01]), long])
+    logger.debug(f'pong: {tosend}')
+    client.send(tosend)
+
+def handle_legacy_ping(logger, stream: BufferedIOBase):
+        # handle legacy ping
+        legacyid = stream.read(1)[0]
+        if legacyid != 0xfa:
+            logger.warning(f'received invalid legacy packet identifier {hex(legacyid)}')
+        logger.debug('valid legacy packet')
+        strlen = int.from_bytes(stream.read(2))
+        pinghost = stream.read(strlen*2).decode('utf-16be')
+        logger.info(f'legacy packet: "{pinghost}"')
+        strlen = int.from_bytes(stream.read(2))
+        proto = stream.read(1)[0]
+        logger.info(f'legacy protocol: {proto}')
+        strlen = int.from_bytes(stream.read(2))
+        hostname = stream.read(strlen*2).decode('utf-16be')
+        port = int.from_bytes(stream.read(4))
+        logger.info(f'legacy connecting to {hostname}:{port}')
+        msg = '§1\x00' # string header
+        version = environ.get('mcversion', '67.69')
+        maxp = int(environ.get('mcmaxplr', '50'))
+        onlp = int(environ.get('mconlineplr', '100'))
+        motd = environ.get('mcmotd', '§da fake status server')
+        proto = environ.get('mcproto', 'same')
+        if proto == 'same':
+            protocol = proto
+        else:
+            protocol = int(proto)
+        msg += f'{str(protocol)}\x00{version}\x00{motd}\x00{str(onlp)}\x00{str(maxp)}\x00'
+        msg = msg.encode('utf-16be')
+        lngt = (len(msg)//2).to_bytes(2)
+        packet = b'\xff' + lngt
+        response = b''.join([packet, msg])
+        logger.debug(f'responding with {response}')
+        return response
+
+@unsized_packet_handler(254)
+def legacy_ping(size: int, client: socket, address, stream):
+    logger = logging.getLogger(f'Packet (legacy s{size} by {address})')
+    logger.info(f'legacy ping: {size} {address}')
+    
+    response = handle_legacy_ping(logger, stream)
+    client.send(response)
+    client.close()
+    return True
+
+class ReceivePacketServer(TCPServer):
+    def __init__(self, server_address: tuple[str | bytes | bytearray, int] | tuple[str | bytes | bytearray, int, int, int], RequestHandlerClass, bind_and_activate: bool = True) -> None:
+        self.logger = logging.getLogger('PacketServer')
+        self.logger.info(f'Starting server...')
+        super().__init__(server_address, RequestHandlerClass, bind_and_activate)
+    def finish_request(self, request, client_address) -> None:
+        self.logger.info(f'Connected: {client_address}')
+        super().finish_request(request, client_address)
+        self.logger.info(f'DISconnected: {client_address}')
+        handshake_data.pop(client_address, None)
 
 def main():
-    logger = logging.getLogger('StatusMain')
-    try:
-        buff = BytesIO()
-        Image.open(environ.get('mcicon', 'icon.png')).resize((64, 64), Image.Resampling.BILINEAR).save(buff, format='PNG')
-        servericon = base64.b64encode(buff.getvalue()).decode('utf-8')
-    except Exception as e:
-        logger.error(f'Couldn\'t open icon.png: {type(e)}')
-        servericon = ''
-
     from sys import argv
+    logger = logging.getLogger('main')
     port = 8500
     if(len(argv) > 1):
         port = int(argv[1])
     addr = environ.get('mcaddr', 'localhost')
     address = (addr, port)
-    server = StatusServer(address, StatusServerHandler, True, servericon)
+    global servericon
     try:
-        address = server.server_address
-        logger.info(f'server on {address[0]}:{address[1]}')
-        server.serve_forever()
-    finally:
-        logger.info('closing server')
-        server.socket.close()
+        img = Image.open(environ.get('mcicon', 'icon.png')).resize((64, 64), Image.Resampling.BILINEAR)
+        buff = BytesIO()
+        img.save(buff, format='PNG')
+        servericon = base64.b64encode(buff.getvalue()).decode('utf-8')
+    except Exception as e:
+        logger.error(f'Couldn\'t open icon.png: {type(e)}')
+        print(traceback.print_exc())
+        servericon = ''
+    server = ReceivePacketServer(address, PacketServerHandler, True)
+    server.serve_forever()
 
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
